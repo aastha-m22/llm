@@ -295,12 +295,13 @@ Options:
   -h, --help  Show this message and exit.
 
 Commands:
-  list*   Show logged prompts and their responses
-  backup  Backup your logs database to this file
-  off     Turn off logging for all prompts
-  on      Turn on logging for all prompts
-  path    Output the path to the logs.db file
-  status  Show current status of database logging
+  list*          Show logged prompts and their responses
+  backup         Backup your logs database to this file
+  conversations  List logged conversations, most recently active first
+  off            Turn off logging for all prompts
+  on             Turn on logging for all prompts
+  path           Output the path to the logs.db file
+  status         Show current status of database logging
 ```
 
 (help-logs-path)=
@@ -323,6 +324,25 @@ Usage: llm logs status [OPTIONS]
 
 Options:
   -h, --help  Show this message and exit.
+```
+
+(help-logs-conversations)=
+#### llm logs conversations --help
+```
+Usage: llm logs conversations [OPTIONS]
+
+  List logged conversations, most recently active first
+
+  Use 'llm logs --cid ID' to see a conversation and 'llm --cid ID' to continue
+  it.
+
+Options:
+  -n, --count INTEGER  Number of conversations to show, use 0 for all  [default:
+                       20]
+  -m, --model TEXT     Filter by model or model alias
+  -d, --database FILE  Path to log database
+  --json               Output as JSON
+  -h, --help           Show this message and exit.
 ```
 
 (help-logs-backup)=

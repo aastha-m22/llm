@@ -66,6 +66,7 @@ from llm.models import ChainResponse, _BaseChainResponse, _BaseConversation
 
 from .logs import (
     LogStore,
+    conversation_rows,
     legacy_log_row_extras,
     log_row_extras,
     merged_log_rows,
@@ -1654,6 +1655,87 @@ def logs_status():
         click.echo(f"Number of legacy conversations:\t{legacy_conversations}")
         click.echo(f"Number of legacy responses:\t{legacy_responses}")
     click.echo(f"Database file size: \t\t{_human_readable_size(path.stat().st_size)}")
+
+
+@logs.command(name="conversations")
+@click.option(
+    "-n",
+    "--count",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Number of conversations to show, use 0 for all",
+)
+@click.option("-m", "--model", help="Filter by model or model alias")
+@click.option(
+    "-d",
+    "--database",
+    type=click.Path(readable=True, exists=True, dir_okay=False),
+    help="Path to log database",
+)
+@click.option("json_output", "--json", is_flag=True, help="Output as JSON")
+def logs_conversations(count, model, database, json_output):
+    """
+    List logged conversations, most recently active first
+
+    Use 'llm logs --cid ID' to see a conversation and 'llm --cid ID'
+    to continue it.
+    """
+    path = pathlib.Path(database or logs_db_path())
+    if not path.exists():
+        raise click.ClickException(f"No log database found at {path}")
+    db = _cli_database(path)
+    migrate(db)
+    model_id = None
+    if model:
+        try:
+            model_id = get_model(model).model_id
+        except UnknownModelError:
+            model_id = model
+    rows = conversation_rows(db, count=count or None, model_id=model_id)
+    if json_output:
+        click.echo(json.dumps(rows, indent=2))
+        return
+    if not rows:
+        return
+    short_names = _shortest_model_names()
+    for row in rows:
+        row["model_display"] = short_names.get(row["model"], row["model"] or "")
+    model_width = min(max(len(row["model_display"]) for row in rows), 24)
+    for row in rows:
+        model_display = row["model_display"]
+        if len(model_display) > model_width:
+            model_display = model_display[: model_width - 1] + "…"
+        turns = row["turns"]
+        name = " ".join((row["name"] or "").split())
+        if row["forked_from"]:
+            name = f"[fork] {name}"
+        click.echo(
+            "{id}  {when}  {turns:>3} {noun}  {model:<{width}}  {name}".format(
+                id=row["id"],
+                when=_format_conversation_time(row["last_active"]),
+                turns=turns,
+                noun="turn " if turns == 1 else "turns",
+                model=model_display,
+                width=model_width,
+                name=name,
+            ).rstrip()
+        )
+
+
+def _shortest_model_names() -> dict[str, str]:
+    "Map each installed model ID to its shortest alias, when shorter"
+    shortest: dict[str, str] = {}
+    for alias, model_obj in get_model_aliases().items():
+        current = shortest.get(model_obj.model_id, model_obj.model_id)
+        if len(alias) < len(current):
+            shortest[model_obj.model_id] = alias
+    return shortest
+
+
+def _format_conversation_time(value) -> str:
+    "Render a stored UTC timestamp as 'YYYY-MM-DD HH:MM'"
+    return (value or "")[:16].replace("T", " ").ljust(16)
 
 
 @logs.command(name="backup")

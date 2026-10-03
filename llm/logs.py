@@ -1860,6 +1860,101 @@ def merged_log_rows(
     return rows
 
 
+# -- llm logs conversations -----------------------------------------------
+#
+# One row per conversation. A conversation started before the upgrade and
+# continued after it has turns in both generations of tables under the same
+# id, so calls from both sides are pooled per id before aggregating. Legacy
+# responses that also exist as turns are dual-write duplicates and skipped,
+# exactly as legacy_log_rows does.
+
+CONVERSATION_ROWS_SQL = """
+with calls as (
+    select thread_id as conversation_id, id, model, datetime_utc
+    from turns
+    {legacy_calls}
+),
+conversation_ids as (
+    select id from threads
+    {legacy_ids}
+),
+summary as (
+    select
+        conversation_ids.id,
+        count(calls.id) as turns,
+        min(calls.datetime_utc) as started,
+        max(calls.datetime_utc) as last_active,
+        max(calls.id) as last_call_id
+    from conversation_ids
+    left join calls on calls.conversation_id = conversation_ids.id
+    group by conversation_ids.id
+)
+select
+    summary.id,
+    {name_expr} as name,
+    threads.forked_from,
+    summary.turns,
+    coalesce(summary.started, threads.datetime_utc) as started,
+    coalesce(summary.last_active, threads.datetime_utc) as last_active,
+    (
+        select calls.model from calls
+        where calls.conversation_id = summary.id
+        order by calls.id desc limit 1
+    ) as model
+from summary
+left join threads on threads.id = summary.id{legacy_join}
+{where}
+order by coalesce(summary.last_call_id, summary.id) desc{limit}
+"""
+
+LEGACY_CONVERSATION_CALLS = """union all
+    select conversation_id, id, model, datetime_utc
+    from responses
+    where id not in (select id from turns)"""
+
+
+def conversation_rows(
+    db,
+    *,
+    count: int | None = None,
+    model_id: str | None = None,
+) -> list[dict]:
+    """Rows for `llm logs conversations`, most recently active first.
+
+    Each row has the conversation id, its name, the model of its most
+    recent call, the number of calls (turns), when it started and when
+    it was last active, and the thread it was forked from, if any.
+    Turn ids are ULIDs in both generations of tables, so the newest call
+    id orders conversations by recency without parsing timestamps.
+    """
+    has_legacy = "conversations" in db.table_names()
+    where = ""
+    params: dict[str, Any] = {}
+    if model_id:
+        where = """where exists (
+    select 1 from calls
+    where calls.conversation_id = summary.id and calls.model = :model
+)"""
+        params["model"] = model_id
+    sql = CONVERSATION_ROWS_SQL.format(
+        legacy_calls=LEGACY_CONVERSATION_CALLS if has_legacy else "",
+        legacy_ids="union select id from conversations" if has_legacy else "",
+        name_expr=(
+            "coalesce(threads.name, conversations.name)"
+            if has_legacy
+            else "threads.name"
+        ),
+        legacy_join=(
+            "\nleft join conversations on conversations.id = summary.id"
+            if has_legacy
+            else ""
+        ),
+        where=where,
+        limit=f"\nlimit {int(count)}" if count else "",
+    )
+    return [dict(row) for row in db.query(sql, params)]
+
+
 LEGACY_ATTACHMENTS_SQL = """
 select
     response_id,

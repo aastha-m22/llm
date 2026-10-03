@@ -1499,3 +1499,167 @@ def test_logs_truncate_markdown_new_store(logs_db, mock_model):
     result = runner.invoke(cli, ["logs", "-t"], catch_exceptions=False)
     assert result.exit_code == 0
     assert "## Response\n\nhello" in result.output
+
+
+CONVERSATION_LINE_RE = re.compile(
+    r"^(?P<id>\S+)  \d{4}-\d{2}-\d{2} \d{2}:\d{2}  +(?P<turns>\d+) turns? +"
+    r"(?P<model>\S+) +(?P<name>.*)$"
+)
+
+
+def _conversation_lines(output):
+    lines = [line for line in output.splitlines() if line]
+    matches = [CONVERSATION_LINE_RE.match(line) for line in lines]
+    assert all(matches), lines
+    return [match.groupdict() for match in matches if match]
+
+
+def test_logs_conversations(logs_db):
+    runner = CliRunner()
+    runner.invoke(cli, ["-m", "echo", "first conversation"], catch_exceptions=False)
+    runner.invoke(cli, ["-c", "second turn"], catch_exceptions=False)
+    runner.invoke(cli, ["-m", "echo", "second\n  conversation"], catch_exceptions=False)
+    result = runner.invoke(cli, ["logs", "conversations"], catch_exceptions=False)
+    assert result.exit_code == 0
+    rows = _conversation_lines(result.output)
+    # Most recently active first, newlines collapsed in the name
+    assert [(row["turns"], row["model"], row["name"]) for row in rows] == [
+        ("1", "echo", "second conversation"),
+        ("2", "echo", "first conversation"),
+    ]
+    # The listed IDs work with llm logs --cid
+    result2 = runner.invoke(
+        cli, ["logs", "--cid", rows[1]["id"], "--json"], catch_exceptions=False
+    )
+    assert [log["prompt"] for log in json.loads(result2.output)] == [
+        "first conversation",
+        "second turn",
+    ]
+
+
+def test_logs_conversations_recency_follows_latest_turn(logs_db):
+    runner = CliRunner()
+    runner.invoke(cli, ["-m", "echo", "older"], catch_exceptions=False)
+    older_id = logs_db.execute("select id from threads").fetchone()[0]
+    runner.invoke(cli, ["-m", "echo", "newer"], catch_exceptions=False)
+    # Continuing the older conversation moves it back to the top
+    runner.invoke(cli, ["--cid", older_id, "again"], catch_exceptions=False)
+    result = runner.invoke(cli, ["logs", "conversations"], catch_exceptions=False)
+    assert [row["name"] for row in _conversation_lines(result.output)] == [
+        "older",
+        "newer",
+    ]
+
+
+def test_logs_conversations_count_model_and_json(logs_db):
+    runner = CliRunner()
+    for i in range(3):
+        runner.invoke(cli, ["-m", "echo", f"prompt {i}"], catch_exceptions=False)
+    result = runner.invoke(cli, ["logs", "conversations", "-n", "2"])
+    assert [row["name"] for row in _conversation_lines(result.output)] == [
+        "prompt 2",
+        "prompt 1",
+    ]
+    assert runner.invoke(cli, ["logs", "conversations", "-m", "mock"]).output == ""
+    result2 = runner.invoke(
+        cli, ["logs", "conversations", "-m", "echo", "-n", "1", "--json"]
+    )
+    rows = json.loads(result2.output)
+    assert len(rows) == 1
+    row = rows[0]
+    assert set(row) == {
+        "id",
+        "name",
+        "forked_from",
+        "turns",
+        "started",
+        "last_active",
+        "model",
+    }
+    assert (row["name"], row["turns"], row["model"], row["forked_from"]) == (
+        "prompt 2",
+        1,
+        "echo",
+        None,
+    )
+
+
+def test_logs_conversations_merges_legacy_tables(logs_db):
+    migrate(logs_db)
+    runner = CliRunner()
+    # A conversation that only exists in the legacy tables
+    logs_db["conversations"].insert(
+        {"id": "01aaaaaaaaaaaaaaaaaaaaaaaa", "name": "legacy only", "model": "davinci"}
+    )
+    logs_db["responses"].insert_all(
+        {
+            "id": f"01aaaaaaaaaaaaaaaaaaaaaaa{i}",
+            "model": "davinci",
+            "prompt": "hi",
+            "response": "hello",
+            "conversation_id": "01aaaaaaaaaaaaaaaaaaaaaaaa",
+            "datetime_utc": "2023-08-17T20:53:58",
+        }
+        for i in range(2)
+    )
+    # A legacy conversation continued after the upgrade: same id on both sides
+    runner.invoke(cli, ["-m", "echo", "started on new tables"])
+    thread_id = logs_db.execute("select id from threads").fetchone()[0]
+    turn_id = logs_db.execute("select id from turns").fetchone()[0]
+    logs_db["conversations"].insert(
+        {"id": thread_id, "name": "continued", "model": "davinci"}
+    )
+    logs_db["responses"].insert_all(
+        [
+            # An older legacy-only call in that conversation
+            {
+                "id": "01bbbbbbbbbbbbbbbbbbbbbbbb",
+                "model": "davinci",
+                "prompt": "before upgrade",
+                "conversation_id": thread_id,
+                "datetime_utc": "2024-01-01T00:00:00",
+            },
+            # A dual-write duplicate of the turn, which must not count twice
+            {
+                "id": turn_id,
+                "model": "echo",
+                "prompt": "started on new tables",
+                "conversation_id": thread_id,
+                "datetime_utc": "2024-01-01T00:00:00",
+            },
+        ]
+    )
+    result = runner.invoke(cli, ["logs", "conversations", "--json"])
+    rows = json.loads(result.output)
+    assert [(row["name"], row["turns"], row["model"]) for row in rows] == [
+        # The thread's own name wins over the legacy one
+        ("started on new tables", 2, "echo"),
+        ("legacy only", 2, "davinci"),
+    ]
+    assert rows[0]["started"] == "2024-01-01T00:00:00"
+
+
+def test_logs_conversations_marks_forks(logs_db):
+    from llm.logs import LogStore
+
+    runner = CliRunner()
+    runner.invoke(cli, ["-m", "echo", "original"], catch_exceptions=False)
+    thread_id, tip = logs_db.execute(
+        "select id, tip_message_hash from threads"
+    ).fetchone()
+    LogStore(logs_db).fork(tip, name="alternate take", forked_from=thread_id)
+    result = runner.invoke(cli, ["logs", "conversations"], catch_exceptions=False)
+    # A fresh fork has no turns of its own yet, and so no model either
+    assert result.output.splitlines()[0].endswith(
+        "0 turns        [fork] alternate take"
+    )
+    rows = json.loads(runner.invoke(cli, ["logs", "conversations", "--json"]).output)
+    assert rows[0]["forked_from"] == thread_id
+    assert rows[0]["turns"] == 0
+
+
+def test_logs_conversations_empty(logs_db):
+    migrate(logs_db)
+    result = CliRunner().invoke(cli, ["logs", "conversations"])
+    assert result.exit_code == 0
+    assert result.output == ""

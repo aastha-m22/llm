@@ -169,6 +169,24 @@ To see logs for a specific conversation based on its ID, use `--cid ID` or `--co
 llm logs --cid 01h82n0q9crqtnzmf13gkyxawg
 ```
 
+(logging-conversations-list)=
+
+### Listing conversations
+
+To find a conversation ID, list your conversations with `llm logs conversations`. The most recently active conversations are shown first:
+
+```bash
+llm logs conversations
+```
+```
+01k6c9t0w4ajm0qz8k5sx1rv2p  2025-10-03 16:23    2 turns  4o-mini  Draft a polite follow-up email …
+01k6c9qzk1m7g2c5n8r0v3d6ty  2025-10-03 15:02    1 turn   4o-mini  ubuntu: install build essentials
+01k6b2xg8e5wz9y1j6p3d0hcqm  2025-10-02 09:41    5 turns  4.1      What was the beef between the t…
+```
+Each line shows the conversation ID, when it was last active (in UTC), the number of prompts in it, the model used most recently - shown by its shortest alias - and the conversation name. Conversations created by forking another one are marked with `[fork]`.
+
+This shows the 20 most recent conversations by default. Use `-n 50` to see more, or `-n 0` to see all of them. Use `-m model` to only show conversations that used a specific model, and `--json` for JSON output.
+
 (logging-search)=
 
 ### Searching the logs

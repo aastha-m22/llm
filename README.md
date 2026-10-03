@@ -354,6 +354,7 @@ For everything else, see [the llm tag](https://simonwillison.net/tags/llm/) on m
   * [Viewing the logs](https://llm.datasette.io/en/stable/logging.html#viewing-the-logs)
     * [-s/–short mode](https://llm.datasette.io/en/stable/logging.html#s-short-mode)
     * [Logs for a conversation](https://llm.datasette.io/en/stable/logging.html#logs-for-a-conversation)
+    * [Listing conversations](https://llm.datasette.io/en/stable/logging.html#listing-conversations)
     * [Searching the logs](https://llm.datasette.io/en/stable/logging.html#searching-the-logs)
     * [Filtering past a specific ID](https://llm.datasette.io/en/stable/logging.html#filtering-past-a-specific-id)
     * [Filtering by model](https://llm.datasette.io/en/stable/logging.html#filtering-by-model)
